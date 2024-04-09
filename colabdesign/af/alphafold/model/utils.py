@@ -85,14 +85,15 @@ def mask_mean(mask, value, axis=None, drop_mask_channel=False, eps=1e-10):
   return (jnp.sum(mask * value, axis=axis) /
           (jnp.sum(mask, axis=axis) * broadcast_factor + eps))
 
-def flat_params_to_haiku(params, fuse=None):
+def flat_params_to_haiku(params, fuse=None, rm_templates=False):
   """Convert a dictionary of NumPy arrays to Haiku parameters."""
   P = {}
   for path, array in params.items():
     scope, name = path.split('//')
-    if scope not in P:
-      P[scope] = {}
-    P[scope][name] = jnp.array(array)
+    if not rm_templates or "template" not in scope:
+      if scope not in P:
+        P[scope] = {}
+      P[scope][name] = jnp.array(array)
   if fuse is not None:
     for a in ["evoformer_iteration",
               "extra_msa_stack",
@@ -123,3 +124,53 @@ def flat_params_to_haiku(params, fuse=None):
           P[f"{k}/center_layer_norm"] = P.pop(f"{k}/center_norm")
           P[f"{k}/layer_norm_input"] = P.pop(f"{k}/left_norm_input")
   return P
+
+def padding_consistent_rng(f):
+  """Modify any element-wise random function to be consistent with padding.
+
+  Normally if you take a function like jax.random.normal and generate an array,
+  say of size (10,10), you will get a different set of random numbers to if you
+  add padding and take the first (10,10) sub-array.
+
+  This function makes a random function that is consistent regardless of the
+  amount of padding added.
+
+  Note: The padding-consistent function is likely to be slower to compile and
+  run than the function it is wrapping, but these slowdowns are likely to be
+  negligible in a large network.
+
+  Args:
+    f: Any element-wise function that takes (PRNG key, shape) as the first 2
+      arguments.
+
+  Returns:
+    An equivalent function to f, that is now consistent for different amounts of
+    padding.
+  """
+  def grid_keys(key, shape):
+    """Generate a grid of rng keys that is consistent with different padding.
+
+    Generate random keys such that the keys will be identical, regardless of
+    how much padding is added to any dimension.
+
+    Args:
+      key: A PRNG key.
+      shape: The shape of the output array of keys that will be generated.
+
+    Returns:
+      An array of shape `shape` consisting of random keys.
+    """
+    if not shape:
+      return key
+    new_keys = jax.vmap(functools.partial(jax.random.fold_in, key))(
+        jnp.arange(shape[0]))
+    return jax.vmap(functools.partial(grid_keys, shape=shape[1:]))(new_keys)
+
+  def inner(key, shape, **kwargs):
+    keys = grid_keys(key, shape)
+    is_prng_key = jax.dtypes.issubdtype(keys.dtype, jax.dtypes.prng_key)
+    signature = '()->()' if is_prng_key else '(2)->()'
+    return jnp.vectorize(
+        functools.partial(f, shape=(), **kwargs), signature=signature
+    )(keys)
+  return inner
