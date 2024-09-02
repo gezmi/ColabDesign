@@ -35,6 +35,35 @@ def sym_it(coords, center, cyclic_symmetry_axis, reflection_axis=None):
     coords = align_axes(coords, reflection_axis, x_axis)
   return coords
 
+def convert_provide_seq(provide_seq, parsed_pdb):
+  provide_seq = provide_seq.split(',') # convert to a list
+  idx = parsed_pdb['pdb_idx']
+
+  renumbered = []
+  for seq in provide_seq:
+    chain = seq[0]
+
+    begin = end = None
+    if '-' in seq:
+      begin, end = map(int, seq[1:].split('-'))
+    elif len(seq) == 1:
+      # Finding the first occurrence of chain
+      begin_idx = next(i for i, item in enumerate(idx) if item[0] == chain)
+
+      # Finding the last occurrence of chain
+      end_idx = len(idx) - 1 - next(i for i, item in enumerate(reversed(idx)) if item[0] == chain)
+    else:
+      begin = end = int(seq[1:])
+
+    if begin is not None:
+      begin_idx = idx.index((chain, begin))
+      end_idx = idx.index((chain, end))
+    renumbered.append(f'{begin_idx}-{end_idx}')
+
+  provide_seq = ','.join(renumbered)
+
+  return provide_seq
+
 def fix_partial_contigs(contigs, parsed_pdb):
   INF = float("inf")
 
